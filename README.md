@@ -53,7 +53,7 @@ Create the following files in your repository:
 ## 🔄 How It Works
 
 - The workflow runs automatically **every day at 6 AM ET**
-- It scrapes the latest playoff schedule from ESPN
+- It scrapes the latest playoff schedule from MLB.com
 - Generates a new `.ics` calendar file
 - Commits it back to the repository
 - Google Calendar picks up the updates automatically
