@@ -5,9 +5,9 @@ from icalendar import Calendar, Event
 import re
 from bs4 import BeautifulSoup
 
-def scrape_espn_schedule():
-    """Scrape MLB playoff schedule from ESPN"""
-    url = "https://www.espn.com/mlb/schedule/_/seasontype/3"
+def scrape_espn_playoff_story():
+    """Scrape MLB playoff schedule from ESPN's playoff story page"""
+    url = "https://www.espn.com/mlb/story/_/id/46409722/2025-mlb-playoffs-word-series-schedule-how-watch-postseason-bracket-standings"
     
     try:
         headers = {
@@ -19,123 +19,102 @@ def scrape_espn_schedule():
         soup = BeautifulSoup(response.content, 'html.parser')
         games = []
         
-        # Find all game containers
-        schedule_tables = soup.find_all('div', class_='ScheduleTables')
+        # Extract text content and parse games
+        content = soup.get_text()
         
-        for table in schedule_tables:
-            # Get date header
-            date_header = table.find('div', class_='Table__Title')
-            if not date_header:
-                continue
+        # Find game entries with pattern: "Day at/vs Team, Time (TV)"
+        # Examples: "Game 1: Tuesday at 1:08 p.m. (ESPN)"
+        game_pattern = r'Game\s+\d+:?\s+([A-Za-z]+)\s+at\s+(\d{1,2}):(\d{2})\s+([ap]\.m\.)'
+        matches = re.finditer(game_pattern, content, re.IGNORECASE)
+        
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+        
+        # Determine the year for games
+        # If we're in October or later, playoff games are in the current year
+        # Otherwise they're in the next year
+        playoff_year = current_year if current_month >= 10 else current_year + 1
+        
+        # Map day names to dates
+        day_map = {}
+        today = datetime.now()
+        for i in range(60):  # Look ahead 60 days
+            future_date = today + timedelta(days=i)
+            day_name = future_date.strftime('%A')
+            if day_name not in day_map:
+                day_map[day_name] = future_date
+        
+        # Find matchup information
+        matchup_pattern = r'([A-Za-z\s]+)\s+(?:at|vs\.?)\s+([A-Za-z\s]+)'
+        matchups = []
+        
+        for match in matches:
+            day_name = match.group(1)
+            hour = int(match.group(2))
+            minute = int(match.group(3))
+            ampm = match.group(4).lower().replace('.', '')
+            
+            if day_name in day_map:
+                game_date = day_map[day_name]
                 
-            date_text = date_header.get_text(strip=True)
-            
-            # Parse date
-            game_date = parse_espn_date(date_text)
-            if not game_date:
-                continue
-            
-            # Find all games for this date
-            rows = table.find_all('tr', class_='Table__TR')
-            
-            for row in rows:
-                try:
-                    # Get teams
-                    teams = row.find_all('span', class_='Table__Team')
-                    if len(teams) < 2:
-                        continue
-                    
-                    away_team = teams[0].get_text(strip=True)
-                    home_team = teams[1].get_text(strip=True)
-                    
-                    # Get time
-                    time_elem = row.find('td', class_='date__col')
-                    if time_elem:
-                        time_text = time_elem.get_text(strip=True)
-                        game_time = parse_time(time_text, game_date)
-                        
-                        if game_time:
-                            games.append({
-                                'away_team': away_team,
-                                'home_team': home_team,
-                                'datetime': game_time,
-                                'date_str': date_text
-                            })
-                except Exception as e:
-                    print(f"Error parsing game row: {e}")
-                    continue
+                # Convert to 24-hour
+                if 'pm' in ampm and hour != 12:
+                    hour += 12
+                elif 'am' in ampm and hour == 12:
+                    hour = 0
+                
+                # Create datetime
+                et_tz = pytz.timezone('America/New_York')
+                game_datetime = game_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                game_datetime = et_tz.localize(game_datetime)
+                
+                # Try to extract matchup near this game time
+                # For now, use generic placeholder
+                games.append({
+                    'away_team': 'TBD',
+                    'home_team': 'TBD',
+                    'datetime': game_datetime,
+                    'description': 'MLB Playoff Game'
+                })
+        
+        # Also try to extract specific matchups from the page
+        # Look for patterns like "Tigers at Guardians", "Red Sox at Yankees", etc.
+        team_matchup_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:at|vs\.?)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)'
+        team_matches = re.finditer(team_matchup_pattern, content)
+        
+        matchup_list = []
+        for tm in team_matches:
+            away = tm.group(1).strip()
+            home = tm.group(2).strip()
+            # Filter out non-team names
+            if len(away.split()) <= 3 and len(home.split()) <= 3:
+                if away not in ['Game', 'Best', 'American', 'National', 'All'] and home not in ['Game', 'Best', 'American', 'National', 'All']:
+                    matchup_list.append((away, home))
+        
+        # Try to match games with matchups
+        if matchup_list and games:
+            matchup_idx = 0
+            for game in games:
+                if matchup_idx < len(matchup_list):
+                    game['away_team'] = matchup_list[matchup_idx][0]
+                    game['home_team'] = matchup_list[matchup_idx][1]
+                    game['description'] = f"{matchup_list[matchup_idx][0]} at {matchup_list[matchup_idx][1]}"
+                    matchup_idx += 1
         
         return games
     
     except Exception as e:
         print(f"Error scraping ESPN: {e}")
+        import traceback
+        traceback.print_exc()
         return []
-
-def parse_espn_date(date_text):
-    """Parse ESPN date format"""
-    try:
-        # Remove day of week if present
-        date_text = re.sub(r'^[A-Za-z]+,\s*', '', date_text)
-        
-        # Try parsing different formats
-        for fmt in ['%B %d, %Y', '%A, %B %d', '%B %d']:
-            try:
-                parsed = datetime.strptime(date_text, fmt)
-                # If year not specified, use current year or next year for playoffs
-                if fmt == '%B %d' or fmt == '%A, %B %d':
-                    current_year = datetime.now().year
-                    # Playoffs are in October, so if we're before October, use current year
-                    # Otherwise use next year if month is before October
-                    parsed = parsed.replace(year=current_year)
-                    if parsed.month < 10 and datetime.now().month >= 10:
-                        parsed = parsed.replace(year=current_year + 1)
-                return parsed
-            except ValueError:
-                continue
-        return None
-    except Exception as e:
-        print(f"Error parsing date {date_text}: {e}")
-        return None
-
-def parse_time(time_text, game_date):
-    """Parse time and combine with date"""
-    try:
-        # Handle TBD/postponed
-        if 'TBD' in time_text or 'PPD' in time_text:
-            return None
-        
-        # Extract time (e.g., "7:08 PM ET")
-        time_match = re.search(r'(\d{1,2}):(\d{2})\s*(AM|PM)\s*ET', time_text)
-        if not time_match:
-            return None
-        
-        hour = int(time_match.group(1))
-        minute = int(time_match.group(2))
-        ampm = time_match.group(3)
-        
-        # Convert to 24-hour
-        if ampm == 'PM' and hour != 12:
-            hour += 12
-        elif ampm == 'AM' and hour == 12:
-            hour = 0
-        
-        # Combine date and time
-        et_tz = pytz.timezone('America/New_York')
-        game_datetime = game_date.replace(hour=hour, minute=minute)
-        game_datetime = et_tz.localize(game_datetime)
-        
-        return game_datetime
-    
-    except Exception as e:
-        print(f"Error parsing time {time_text}: {e}")
-        return None
 
 def create_ical_calendar(games):
     """Create iCalendar file from games"""
     cal = Calendar()
     cal.add('prodid', '-//MLB Playoff Calendar//EN')
     cal.add('version', '2.0')
-    cal.add('x-wr-calname', 'MLB Playoffs 2024')
+    cal.add('x-wr-calname', 'MLB Playoffs 2025')
     cal.add('x-wr-timezone', 'America/New_York')
     cal.add('x-wr-caldesc', 'MLB Playoff Schedule - Auto-updated daily')
     
@@ -146,7 +125,9 @@ def create_ical_calendar(games):
         event = Event()
         
         # Create title
-        title = f"{game['away_team']} @ {game['home_team']}"
+        away = game.get('away_team', 'TBD')
+        home = game.get('home_team', 'TBD')
+        title = f"{away} @ {home}" if away != 'TBD' and home != 'TBD' else "MLB Playoff Game"
         event.add('summary', title)
         
         # Add start time
@@ -156,14 +137,15 @@ def create_ical_calendar(games):
         event.add('dtend', game['datetime'] + timedelta(hours=3, minutes=30))
         
         # Add description
-        description = f"MLB Playoff Game\n{game['away_team']} at {game['home_team']}"
+        description = game.get('description', f"MLB Playoff Game\n{away} at {home}")
         event.add('description', description)
         
         # Add location
-        event.add('location', f"{game['home_team']} Stadium")
+        location = f"{home} Stadium" if home != 'TBD' else "TBD"
+        event.add('location', location)
         
         # Create unique ID
-        uid = f"{game['datetime'].strftime('%Y%m%d%H%M')}-{game['away_team']}-{game['home_team']}@mlb-playoffs"
+        uid = f"{game['datetime'].strftime('%Y%m%d%H%M')}-{away}-{home}@mlb-playoffs"
         event.add('uid', uid)
         
         # Add timestamp
@@ -175,7 +157,7 @@ def create_ical_calendar(games):
 
 def main():
     print("Scraping MLB playoff schedule from ESPN...")
-    games = scrape_espn_schedule()
+    games = scrape_espn_playoff_story()
     
     print(f"Found {len(games)} games")
     
@@ -189,9 +171,9 @@ def main():
         
         print("Calendar file created: mlb_playoffs.ics")
         print("\nGames found:")
-        for game in games[:5]:  # Show first 5
+        for game in games[:10]:  # Show first 10
             if game.get('datetime'):
-                print(f"  {game['datetime'].strftime('%Y-%m-%d %I:%M %p ET')}: {game['away_team']} @ {game['home_team']}")
+                print(f"  {game['datetime'].strftime('%Y-%m-%d %I:%M %p ET')}: {game.get('away_team', 'TBD')} @ {game.get('home_team', 'TBD')}")
     else:
         print("No games found. The season may be over or there's an issue with scraping.")
 
