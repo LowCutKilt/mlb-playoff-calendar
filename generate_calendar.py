@@ -8,64 +8,79 @@ def scrape_mlb_api():
     """Scrape MLB playoff schedule from MLB's official API"""
     
     try:
-        # MLB Stats API endpoint for schedule
-        # Season type 'F' = Postseason
         current_year = datetime.now().year
-        
-        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&season={current_year}&gameType=F&hydrate=team,venue"
-        
-        print(f"Fetching from MLB API: {url}")
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        
-        data = response.json()
         games = []
         
-        # Parse the schedule data
-        if 'dates' in data:
-            for date_entry in data['dates']:
-                for game in date_entry.get('games', []):
-                    try:
-                        # Get game time
-                        game_time_str = game.get('gameDate')
-                        if not game_time_str:
+        # Try multiple game types for playoffs
+        # F = Postseason (all rounds)
+        # D = Division Series
+        # L = League Championship
+        # W = World Series
+        game_types = ['F', 'D', 'L', 'W']
+        
+        for game_type in game_types:
+            url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&season={current_year}&gameType={game_type}&hydrate=team,venue"
+            
+            print(f"Fetching from MLB API (type {game_type}): {url}")
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Parse the schedule data
+            if 'dates' in data:
+                for date_entry in data['dates']:
+                    for game in date_entry.get('games', []):
+                        try:
+                            # Get game time
+                            game_time_str = game.get('gameDate')
+                            if not game_time_str:
+                                continue
+                            
+                            # Parse ISO format time
+                            game_time = datetime.strptime(game_time_str, '%Y-%m-%dT%H:%M:%SZ')
+                            game_time = pytz.UTC.localize(game_time)
+                            
+                            # Convert to ET
+                            et_tz = pytz.timezone('America/New_York')
+                            game_time_et = game_time.astimezone(et_tz)
+                            
+                            # Get team info
+                            away_team = game.get('teams', {}).get('away', {}).get('team', {}).get('name', 'TBD')
+                            home_team = game.get('teams', {}).get('home', {}).get('team', {}).get('name', 'TBD')
+                            
+                            # Get venue
+                            venue = game.get('venue', {}).get('name', 'TBD')
+                            
+                            # Get series description
+                            series_desc = game.get('seriesDescription', 'MLB Playoffs')
+                            game_number = game.get('seriesGameNumber', '')
+                            
+                            # Get game ID to avoid duplicates
+                            game_id = game.get('gamePk', '')
+                            
+                            # Check if already added
+                            if not any(g.get('game_id') == game_id for g in games):
+                                games.append({
+                                    'game_id': game_id,
+                                    'away_team': away_team,
+                                    'home_team': home_team,
+                                    'datetime': game_time_et,
+                                    'venue': venue,
+                                    'series': series_desc,
+                                    'game_number': game_number,
+                                    'status': game.get('status', {}).get('detailedState', '')
+                                })
+                        except Exception as e:
+                            print(f"Error parsing game: {e}")
                             continue
-                        
-                        # Parse ISO format time
-                        game_time = datetime.strptime(game_time_str, '%Y-%m-%dT%H:%M:%SZ')
-                        game_time = pytz.UTC.localize(game_time)
-                        
-                        # Convert to ET
-                        et_tz = pytz.timezone('America/New_York')
-                        game_time_et = game_time.astimezone(et_tz)
-                        
-                        # Get team info
-                        away_team = game.get('teams', {}).get('away', {}).get('team', {}).get('name', 'TBD')
-                        home_team = game.get('teams', {}).get('home', {}).get('team', {}).get('name', 'TBD')
-                        
-                        # Get venue
-                        venue = game.get('venue', {}).get('name', 'TBD')
-                        
-                        # Get series description
-                        series_desc = game.get('seriesDescription', 'MLB Playoffs')
-                        game_number = game.get('seriesGameNumber', '')
-                        
-                        games.append({
-                            'away_team': away_team,
-                            'home_team': home_team,
-                            'datetime': game_time_et,
-                            'venue': venue,
-                            'series': series_desc,
-                            'game_number': game_number,
-                            'status': game.get('status', {}).get('detailedState', '')
-                        })
-                    except Exception as e:
-                        print(f"Error parsing game: {e}")
-                        continue
+        
+        # Sort by datetime
+        games.sort(key=lambda x: x['datetime'])
         
         return games
     
@@ -120,8 +135,9 @@ def create_ical_calendar(games):
         venue = game.get('venue', f"{home} Stadium")
         event.add('location', venue)
         
-        # Create unique ID
-        uid = f"{game['datetime'].strftime('%Y%m%d%H%M')}-{away}-{home}@mlb-playoffs"
+        # Create unique ID using game_id
+        game_id = game.get('game_id', game['datetime'].strftime('%Y%m%d%H%M'))
+        uid = f"{game_id}-{away}-{home}@mlb-playoffs"
         event.add('uid', uid)
         
         # Add timestamp
@@ -147,10 +163,11 @@ def main():
         
         print("Calendar file created: mlb_playoffs.ics")
         print("\nGames found:")
-        for game in games[:10]:  # Show first 10
+        for game in games[:15]:  # Show first 15
             if game.get('datetime'):
                 series = game.get('series', 'Playoff')
-                print(f"  {game['datetime'].strftime('%Y-%m-%d %I:%M %p ET')}: {series} - {game.get('away_team', 'TBD')} @ {game.get('home_team', 'TBD')}")
+                status = game.get('status', '')
+                print(f"  {game['datetime'].strftime('%Y-%m-%d %I:%M %p ET')}: {series} - {game.get('away_team', 'TBD')} @ {game.get('home_team', 'TBD')} ({status})")
     else:
         print("No games found. The playoffs may not have started yet or may be over.")
 
